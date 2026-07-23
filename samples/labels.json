@@ -1,0 +1,19 @@
+[
+  {
+    "file": "1.jpg",
+    "action_id": "battery_recycling",
+    "action_hint": "recycling batteries at a machine",
+    "expected_objects": ["battery"],
+    "expected_cleanliness": "clean",
+    "expected_verified": true
+  },
+  {
+    "file": "1.jpg",
+    "action_id": "pet_bottle_recycling",
+    "action_hint": "recycling a PET bottle at a machine",
+    "expected_objects": ["pet bottle"],
+    "expected_count": 1,
+    "expected_cleanliness": "clean",
+    "expected_verified": true
+  }
+]

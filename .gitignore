@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+.DS_Store
+# keep samples/ and labels.json; ignore ad-hoc scratch
+samples/_scratch/

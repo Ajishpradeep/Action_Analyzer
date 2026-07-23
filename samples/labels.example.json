@@ -1,0 +1,26 @@
+[
+  {
+    "file": "1.jpg",
+    "action_id": "battery_recycling",
+    "action_hint": "recycling batteries at a convenience store",
+    "expected_objects": ["battery"],
+    "expected_scale_kg": 1.3,
+    "expected_cleanliness": "clean",
+    "expected_verified": true
+  },
+  {
+    "file": "1.jpg",
+    "action_id": "paper_container_css",
+    "action_hint": "recycling a paper bento box",
+    "expected_objects": ["paper container"],
+    "expected_cleanliness": "dirty",
+    "expected_verified": false
+  },
+  {
+    "file": "2.jpg",
+    "action_id": "reusable_cup",
+    "action_hint": "using my own cup at a drink shop",
+    "expected_objects": ["reusable cup"],
+    "expected_verified": true
+  }
+]

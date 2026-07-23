@@ -1,0 +1,57 @@
+{
+  "_meta": {
+    "note": "Reward values are ILLUSTRATIVE, taken from the research docs. Verify against current MOENV / 7-Eleven / FamilyMart policy before real use.",
+    "points_to_ntd": 100,
+    "comment_points_to_ntd": "100 Green Points = NT$1 (EPA convention)."
+  },
+  "battery_recycling": {
+    "display_name": "Battery recycling at a convenience store",
+    "required_objects_any": ["battery", "batteries", "dry battery", "lithium battery", "button cell"],
+    "required_markers_any": ["7-eleven", "7-11", "seven eleven", "familymart", "family mart", "ecoco", "recycling bin", "reverse vending machine"],
+    "markers_optional": true,
+    "reward": { "type": "per_weight", "unit_kg": 0.5, "points_per_unit": 1100, "ntd_per_unit": 11, "round": "down", "fallback_flat_points": 500, "fallback_ntd": 5 },
+    "weight_field": "scale_reading_kg",
+    "safety_checks": [
+      { "field": "lithium_terminal_taped", "must_be": true, "only_if_object_any": ["lithium battery", "button cell"], "fail_message": "Lithium/button-cell terminals must be taped before disposal to prevent short circuits." }
+    ],
+    "reject_if": [
+      { "field": "cleanliness", "equals": "leaking", "message": "Swollen or leaking batteries are rejected — hand these directly to public cleaning squads." }
+    ],
+    "min_confidence": 0.55,
+    "educational": "Bring dry batteries to any 7-Eleven / FamilyMart counter — roughly NT$11 discount per 0.5 kg. Tape lithium and button-cell terminals first."
+  },
+  "pet_bottle_recycling": {
+    "display_name": "PET bottle recycling",
+    "required_objects_any": ["pet bottle", "plastic bottle", "beverage bottle", "water bottle"],
+    "required_markers_any": ["recycling bin", "recycle bin", "reverse vending machine", "blue bin"],
+    "markers_optional": true,
+    "reward": { "type": "per_item", "points_per_item": 200, "ntd_per_item": 2, "count_field": "item_count", "default_count": 1 },
+    "reject_if": [
+      { "field": "cleanliness", "equals": "dirty", "message": "Rinse the bottle and remove the cap/label before recycling — food/liquid residue lowers recycled value." }
+    ],
+    "min_confidence": 0.5,
+    "educational": "Empty, rinse, and flatten PET bottles. Caps go with plastics too. Clean bottles keep recycling value high."
+  },
+  "paper_container_css": {
+    "display_name": "Paper container — Clean, Sort, Stack (清、分、疊)",
+    "required_objects_any": ["paper container", "bento box", "paper cup", "paper lunchbox", "food container"],
+    "required_markers_any": [],
+    "markers_optional": true,
+    "reward": { "type": "flat", "points": 300, "ntd": 3 },
+    "reject_if": [
+      { "field": "cleanliness", "equals": "dirty", "message": "Paper containers must be wiped/rinsed clean (清). Heavy oil or food residue means rejection." }
+    ],
+    "min_confidence": 0.5,
+    "educational": "Paper meal boxes are PE-lined, not normal paper. Clean (清) → Sort with other containers (分) → Stack to reduce volume (疊)."
+  },
+  "reusable_cup": {
+    "display_name": "Reusable cup at a drink shop",
+    "required_objects_any": ["reusable cup", "personal cup", "tumbler", "mug", "circular cup"],
+    "required_markers_any": ["counter", "barista", "cafe", "drink shop", "convenience store"],
+    "markers_optional": true,
+    "reward": { "type": "flat", "points": 500, "ntd": 5 },
+    "reject_if": [],
+    "min_confidence": 0.5,
+    "educational": "Bringing your own cup earns a legally-mandated NT$5+ discount (since July 2022) plus bonus Green Points for skipping single-use plastic."
+  }
+}
