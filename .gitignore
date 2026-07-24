@@ -5,3 +5,6 @@ venv/
 .DS_Store
 # keep samples/ and labels.json; ignore ad-hoc scratch
 samples/_scratch/
+# secrets + local embedding state (opt-in semantic layer)
+.env
+

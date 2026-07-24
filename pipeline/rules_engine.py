@@ -1,30 +1,35 @@
-"""Rules engine + deterministic reward calculator.
+"""Deterministic scorer for the fully open-set eco brain.
 
-The LLM never computes reward or renders the final verdict. It only observes.
-This module turns the observation into a pass/fail decision and a number, using
-the flat `eco_rules.json` knowledge base.
+There are NO predefined actions. The VLM judges any action on its own merits and reports
+`is_eco_action`, `eco_relevance` (0-1, how eco-friendly it is), and a *suggested* point
+value. This module turns that into the final reward deterministically:
+
+    points = clamp(suggested_points, min, max) x eco_relevance x quality_multiplier
+
+so the same observation always yields the same number and the model never sets the payout
+(CLAUDE.md #6). All knobs live in `rules/eco_rules.json` -> "scoring".
 """
 
 from __future__ import annotations
 
 import json
-import math
 import os
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import List
 
 RULES_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "rules", "eco_rules.json")
 
 
 @dataclass
 class Decision:
-    action_id: str
-    display_name: str
+    action_label: str = ""
+    scene_description: str = ""
     verified: bool = False
     points: int = 0
     ntd: float = 0.0
     confidence: float = 0.0
-    reasons: List[str] = field(default_factory=list)   # why pass/fail
+    eco_relevance: float = 0.0
+    reasons: List[str] = field(default_factory=list)
     educational: str = ""
     needs_review: bool = False
 
@@ -34,112 +39,43 @@ def load_rules(path: str = RULES_PATH) -> dict:
         return json.load(f)
 
 
-def _any_match(candidates: List[str], targets: List[str]) -> bool:
-    """True if any target string appears within any candidate string (substring, both ways)."""
-    cand = [c.lower() for c in candidates]
-    for t in targets:
-        t = t.lower()
-        for c in cand:
-            if t in c or c in t:
-                return True
-    return False
+def _clamp(x: float, lo: float, hi: float) -> float:
+    return max(lo, min(hi, x))
 
 
-def _compute_reward(rule: dict, obs: dict) -> tuple[int, float, Optional[str]]:
-    r = rule["reward"]
-    kind = r["type"]
+def score_action(obs: dict, rules: dict) -> Decision:
+    """Score any observed action open-set. `rules` is the loaded eco_rules.json."""
+    cfg = rules.get("scoring", {})
+    label = obs.get("action_label") or "this action"
+    dec = Decision(
+        action_label=label,
+        scene_description=obs.get("scene_description", ""),
+        confidence=float(obs.get("confidence", 0.0)),
+        eco_relevance=float(obs.get("eco_relevance", 0.0)),
+        educational="Any genuine action that helps the environment earns Green Points — "
+                    "the more deliberate and higher-impact, the more it's worth.",
+    )
 
-    if kind == "flat":
-        return int(r["points"]), float(r.get("ntd", 0)), None
-
-    if kind == "per_item":
-        count = obs.get(r.get("count_field", "item_count"))
-        if not count or count < 1:
-            count = r.get("default_count", 1)
-        count = int(count)
-        return count * int(r["points_per_item"]), count * float(r.get("ntd_per_item", 0)), \
-            f"{count} item(s) counted"
-
-    if kind == "per_weight":
-        w = obs.get(rule.get("weight_field", "scale_reading_kg"))
-        if w is None:
-            # Reverse-vending machines (e.g. ecoco) weigh internally and never show
-            # a scale to the camera. If the rule declares a fallback drop-off reward,
-            # honor the verified action with the base reward instead of zero.
-            fb = r.get("fallback_flat_points")
-            if fb is not None:
-                return int(fb), float(r.get("fallback_ntd", 0)), \
-                    "no scale weight visible — awarding base drop-off reward"
-            return 0, 0.0, "no scale weight was readable, so no weight-based reward"
-        unit = float(r["unit_kg"])
-        units = w / unit
-        units = math.floor(units) if r.get("round") == "down" else round(units)
-        units = int(units)
-        pts = units * int(r["points_per_unit"])
-        ntd = units * float(r.get("ntd_per_unit", 0))
-        return pts, ntd, f"{w} kg → {units} × {unit} kg increments"
-
-    return 0, 0.0, "unknown reward type"
-
-
-def evaluate(action_id: str, obs: dict, rules: dict) -> Decision:
-    """Evaluate one observation against one action's rule."""
-    if action_id not in rules:
-        return Decision(action_id, action_id, verified=False,
-                        reasons=[f"No rule defined for '{action_id}'."])
-
-    rule = rules[action_id]
-    dec = Decision(action_id=action_id, display_name=rule.get("display_name", action_id),
-                   confidence=float(obs.get("confidence", 0.0)),
-                   educational=rule.get("educational", ""))
-
-    objs = obs.get("detected_objects", [])
-    markers = obs.get("location_markers", [])
-
-    # 1. Required object present?
-    req_obj = rule.get("required_objects_any", [])
-    if req_obj and not _any_match(objs, req_obj):
+    # 1. Is it an eco action at all, and how close to one?
+    min_rel = float(cfg.get("min_eco_relevance", 0.4))
+    if not obs.get("is_eco_action") or dec.eco_relevance < min_rel:
         dec.verified = False
+        rationale = obs.get("eco_rationale") or "no clear environmental benefit"
         dec.reasons.append(
-            f"Expected to see one of {req_obj} but detected {objs or 'nothing relevant'}."
+            f"Not eco-friendly enough: eco-relevance {dec.eco_relevance:.2f} is below the "
+            f"{min_rel:.2f} threshold ({rationale})."
         )
         return dec
-    dec.reasons.append(f"Recognized a valid item ({', '.join(objs) or 'ok'}).")
 
-    # 2. Location marker (usually optional in the PoC).
-    req_mark = rule.get("required_markers_any", [])
-    if req_mark:
-        if _any_match(markers, req_mark):
-            dec.reasons.append(f"Location cue matched ({', '.join(markers)}).")
-        elif rule.get("markers_optional", True):
-            dec.reasons.append("No location cue seen (optional) — proceeding.")
-        else:
-            dec.verified = False
-            dec.reasons.append(f"Required location cue {req_mark} not visible.")
-            return dec
+    # 2. Hazard/contamination gate: leaking items pay nothing (quality multiplier 0).
+    quality = float(cfg.get("quality_multipliers", {}).get(str(obs.get("cleanliness")), 1.0))
+    if quality <= 0.0:
+        dec.verified = False
+        dec.reasons.append("Item appears leaking/hazardous — hand it to a safe drop-off, no reward.")
+        return dec
 
-    # 3. Reject conditions.
-    for cond in rule.get("reject_if", []):
-        if str(obs.get(cond["field"])).lower() == str(cond["equals"]).lower():
-            dec.verified = False
-            dec.reasons.append(cond.get("message", f"Rejected: {cond['field']} = {cond['equals']}."))
-            return dec
-
-    # 4. Safety checks (conditional on object type).
-    for chk in rule.get("safety_checks", []):
-        only_if = chk.get("only_if_object_any")
-        applies = True if not only_if else _any_match(objs, only_if)
-        if applies:
-            val = obs.get(chk["field"])
-            if val != chk["must_be"]:
-                dec.verified = False
-                dec.reasons.append(chk.get("fail_message",
-                                           f"Safety check failed: {chk['field']} must be {chk['must_be']}."))
-                return dec
-            dec.reasons.append("Safety check passed.")
-
-    # 5. Confidence floor.
-    min_conf = float(rule.get("min_confidence", 0.5))
+    # 3. Confidence floor -> route to review.
+    min_conf = float(cfg.get("min_confidence", 0.5))
     if dec.confidence < min_conf:
         dec.verified = False
         dec.needs_review = True
@@ -148,13 +84,23 @@ def evaluate(action_id: str, obs: dict, rules: dict) -> Decision:
         )
         return dec
 
-    # 6. Passed → reward.
-    pts, ntd, note = _compute_reward(rule, obs)
-    if note:
-        dec.reasons.append(note)
+    # 4. Deterministic reward: clamp the suggestion, scale by eco-relevance and quality.
+    lo, hi = int(cfg.get("min_points", 50)), int(cfg.get("max_points", 600))
+    suggested = int(obs.get("suggested_points") or 0)
+    clamped = _clamp(suggested, lo, hi)
+    pts = int(round(clamped * dec.eco_relevance * quality))
     dec.points = pts
-    dec.ntd = ntd
-    dec.verified = pts > 0 or rule["reward"]["type"] == "flat"
+    dec.ntd = pts / float(cfg.get("points_to_ntd", 100))
+    dec.verified = pts > 0
+
+    dec.reasons.append(f"Recognized an eco-friendly action: {label}.")
+    dec.reasons.append(
+        f"Eco-relevance {dec.eco_relevance:.2f}; brain suggested {suggested} pts → "
+        f"clamped to [{lo}-{hi}] = {clamped:.0f}, ×{dec.eco_relevance:.2f} relevance"
+        + (f" ×{quality:.2f} quality" if quality != 1.0 else "") + f" = {pts} pts."
+    )
+    if obs.get("suggested_reasoning"):
+        dec.reasons.append(f"Brain's rationale: {obs['suggested_reasoning']}")
     if not dec.verified:
-        dec.reasons.append("Verified action but reward computed to zero.")
+        dec.reasons.append("Recognized an eco-action but the reward computed to zero.")
     return dec

@@ -24,15 +24,22 @@ from .prompts import (
 DEFAULT_MODEL = "qwen3-vl:8b"
 
 _DEFAULTS = {
+    # what the action is
+    "scene_description": "",
+    "action_label": "",
+    # how eco-friendly it is
+    "is_eco_action": False,
+    "eco_relevance": 0.0,
+    "eco_rationale": "",
+    # reward suggestion (clamped in Python)
+    "suggested_points": 0,
+    "suggested_reasoning": "",
+    # evidence
     "detected_objects": [],
-    "primary_action": None,
     "location_markers": [],
     "ocr_text": [],
-    "scale_reading_kg": None,
     "item_count": None,
     "cleanliness": "unknown",
-    "lithium_terminal_taped": None,
-    "reusable_cup_present": False,
     "challenge_code_visible": None,
     "confidence": 0.0,
     "notes": "",
@@ -69,28 +76,38 @@ def _coerce(raw: dict) -> dict:
         elif not isinstance(v, list):
             out[list_key] = []
         out[list_key] = [str(x).lower().strip() for x in out[list_key]]
-    try:
-        out["confidence"] = float(out["confidence"])
-    except (TypeError, ValueError):
-        out["confidence"] = 0.0
-    for num_key in ("scale_reading_kg", "item_count"):
-        if out[num_key] is not None:
-            try:
-                out[num_key] = float(out[num_key]) if num_key == "scale_reading_kg" else int(out[num_key])
-            except (TypeError, ValueError):
-                out[num_key] = None
+    for float_key in ("confidence", "eco_relevance"):
+        try:
+            out[float_key] = max(0.0, min(1.0, float(out[float_key])))
+        except (TypeError, ValueError):
+            out[float_key] = 0.0
+    if out["item_count"] is not None:
+        try:
+            out["item_count"] = int(out["item_count"])
+        except (TypeError, ValueError):
+            out["item_count"] = None
     if out["cleanliness"] not in ("clean", "dirty", "leaking", "unknown"):
         out["cleanliness"] = "unknown"
+
+    # Open-set brain fields.
+    out["is_eco_action"] = bool(out["is_eco_action"])
+    try:
+        out["suggested_points"] = max(0, int(round(float(out["suggested_points"]))))
+    except (TypeError, ValueError):
+        out["suggested_points"] = 0
+    for str_key in ("scene_description", "action_label", "suggested_reasoning", "eco_rationale"):
+        out[str_key] = "" if out[str_key] is None else str(out[str_key])
     return out
 
 
-def perceive(frame_paths: List[str], action_hint: str, challenge_code: str,
+def perceive(frame_paths: List[str], challenge_code: str,
              model: str = DEFAULT_MODEL) -> dict:
     """Run the VLM over one or more frames and return the coerced extraction dict.
 
-    Adds two bookkeeping keys: `_raw` (the model text) and `_error` (str or None).
+    Fully open-set: no action is supplied; the brain decides what the action is and how
+    eco-friendly it is. Adds `_raw` (the model text) and `_error` (str or None).
     """
-    user_prompt = build_user_prompt(action_hint, challenge_code)
+    user_prompt = build_user_prompt(challenge_code)
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": user_prompt, "images": frame_paths},

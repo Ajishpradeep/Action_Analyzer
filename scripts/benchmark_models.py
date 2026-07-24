@@ -1,25 +1,23 @@
-"""Empirically compare VLMs on YOUR data, so model choice isn't a matter of trust.
+"""Empirically compare VLMs on YOUR data — open-set, no predefined actions.
 
-It runs each candidate Ollama model over a folder of sample images you label once,
-then scores how well each model extracts the fields the rules engine actually needs
-(object recognition, OCR of scale/stickers, cleanliness, counts, confidence) plus
+Runs each candidate Ollama model over a folder of sample media you label once, then
+scores how well each model does the open-set job the app needs: correctly deciding
+whether something is an eco-action, judging eco-relevance, and reading the scene — plus
 latency. Prints a ranked table.
 
 Usage
 -----
-1. Put sample photos in  samples/<action_id>/*.jpg   e.g. samples/battery_recycling/1.jpg
-2. Create samples/labels.json (see samples/labels.example.json) with the ground truth
-   for each file: the expected action, expected objects, and any expected scale/count.
+1. Put sample photos/videos in  samples/  (flat, any filename), e.g. samples/1.jpg
+2. Create samples/labels.json (see samples/labels.example.json): for each file, the
+   expected_is_eco flag and a short note.
 3. Pull the models you want to compare, then:
 
      ollama pull qwen3-vl:8b
      ollama pull qwen3-vl:4b
-     ollama pull gemma3:12b
-     ollama pull minicpm-v4.5:8b
 
-     uv run python scripts/benchmark_models.py --models qwen3-vl:8b qwen3-vl:4b gemma3:12b minicpm-v4.5:8b
+     uv run python scripts/benchmark_models.py --models qwen3-vl:8b qwen3-vl:4b
 
-No GPU here in CI — this is meant to run on your Mac where Ollama lives.
+No GPU here in CI — run this on your Mac where Ollama lives.
 """
 
 from __future__ import annotations
@@ -34,7 +32,6 @@ from typing import Dict, List
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from pipeline import vlm as vlm_mod
-from pipeline.rules_engine import evaluate, load_rules
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SAMPLES_DIR = os.path.join(ROOT, "samples")
@@ -42,35 +39,16 @@ LABELS_PATH = os.path.join(SAMPLES_DIR, "labels.json")
 
 
 def _score_one(obs: dict, truth: dict) -> Dict[str, float]:
-    """Field-level correctness for one image. Each sub-score is 0..1."""
+    """Open-set correctness for one file. Each sub-score is 0..1."""
     s = {}
-
-    # Object recognition: did any expected object appear?
-    exp_objs = [o.lower() for o in truth.get("expected_objects", [])]
-    got_objs = [o.lower() for o in obs.get("detected_objects", [])]
-    if exp_objs:
-        hit = any(any(e in g or g in e for g in got_objs) for e in exp_objs)
-        s["objects"] = 1.0 if hit else 0.0
-
-    # OCR scale reading (if the sample has a scale).
-    if truth.get("expected_scale_kg") is not None:
-        got = obs.get("scale_reading_kg")
-        s["scale_ocr"] = 1.0 if (got is not None and
-                                 abs(float(got) - float(truth["expected_scale_kg"])) <= 0.1) else 0.0
-
-    # Count.
-    if truth.get("expected_count") is not None:
-        s["count"] = 1.0 if obs.get("item_count") == truth["expected_count"] else 0.0
-
-    # Cleanliness.
-    if truth.get("expected_cleanliness"):
-        s["cleanliness"] = 1.0 if obs.get("cleanliness") == truth["expected_cleanliness"] else 0.0
-
-    # End-to-end verdict: does the pipeline reach the expected verified state?
-    rules = load_rules()
-    dec = evaluate(truth["action_id"], obs, rules)
-    s["verdict"] = 1.0 if dec.verified == truth.get("expected_verified", True) else 0.0
-
+    expected = bool(truth.get("expected_is_eco", True))
+    # Did the brain get the eco / not-eco call right?
+    s["is_eco"] = 1.0 if bool(obs.get("is_eco_action")) == expected else 0.0
+    # For genuine eco-actions, reward a decisive eco-relevance; for non-eco, a low one.
+    rel = float(obs.get("eco_relevance", 0.0))
+    s["relevance"] = (rel if expected else (1.0 - rel))
+    # Did it describe the scene at all?
+    s["described"] = 1.0 if (obs.get("scene_description") or obs.get("action_label")) else 0.0
     return s
 
 
@@ -80,13 +58,12 @@ def run_model(model: str, labels: List[dict]) -> dict:
     errors = 0
 
     for item in labels:
-        path = os.path.join(SAMPLES_DIR, item["action_id"], item["file"])
+        path = os.path.join(SAMPLES_DIR, item["file"])
         if not os.path.exists(path):
             print(f"  ! missing sample: {path}")
             continue
         t0 = time.time()
-        obs = vlm_mod.perceive([path], item.get("action_hint", item["action_id"]),
-                               item.get("challenge_code", ""), model=model)
+        obs = vlm_mod.perceive([path], item.get("challenge_code", ""), model=model)
         latencies.append(time.time() - t0)
         if obs.get("_error"):
             errors += 1
@@ -105,8 +82,7 @@ def run_model(model: str, labels: List[dict]) -> dict:
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--models", nargs="+",
-                    default=["qwen3-vl:8b", "qwen3-vl:4b", "gemma3:12b", "minicpm-v4.5:8b"])
+    ap.add_argument("--models", nargs="+", default=["qwen3-vl:8b", "qwen3-vl:4b"])
     args = ap.parse_args()
 
     if not os.path.exists(LABELS_PATH):
@@ -120,7 +96,6 @@ def main():
         print(f"\n=== {m} ===")
         results[m] = run_model(m, labels)
 
-    # Ranked table.
     fields = sorted({k for r in results.values() for k in r if not k.startswith("_")})
     header = ["model", "overall", "latency_s", "errors"] + fields
     print("\n" + " | ".join(f"{h:>12}" for h in header))

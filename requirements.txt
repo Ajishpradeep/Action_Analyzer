@@ -4,3 +4,7 @@ opencv-python>=4.9
 numpy>=1.26
 Pillow>=10.2
 ImageHash>=4.3
+# Opt-in semantic anti-fraud / second-opinion layer (pipeline/embeddings.py).
+# Only used when GEMINI_API_KEY is set; the app runs fully local without these.
+google-genai>=1.0
+python-dotenv>=1.0

@@ -1,9 +1,9 @@
-"""Eco-Reward PoC — Gradio front end.
+"""Eco-Reward PoC — Gradio front end (fully open-set).
 
-Run Ollama first:
-    ollama serve            # (usually already running)
-    ollama pull qwen3-vl:8b
-Then:
+Upload any photo or short video of any action; the app works out what you're doing, judges
+how eco-friendly it is, and rewards it. Nothing to pick, no model details to worry about.
+
+Run:
     uv run python app.py
 """
 
@@ -11,39 +11,56 @@ from __future__ import annotations
 
 import gradio as gr
 
-from pipeline import fraud as fraud_mod
+from pipeline import fingerprint as fp_mod
 from pipeline import orchestrator
+from pipeline.embeddings import get_embedder
 from pipeline.rules_engine import load_rules
-from pipeline.vlm import DEFAULT_MODEL
 
 RULES = load_rules()
-ACTION_CHOICES = [
-    (RULES[k]["display_name"], k)
-    for k in RULES
-    if not k.startswith("_")
+
+# Session-scoped duplicate memory (average-hash fallback). Per-user in a real deployment.
+SEEN_HASHES: set[str] = set()
+
+# Semantic replay detection is available when a Gemini key is configured; otherwise the
+# anti-replay toggle falls back to a local session-only duplicate check.
+EMBEDDER = get_embedder()
+STORE = fp_mod.default_store() if EMBEDDER is not None else None
+
+_UPLOAD_TYPES = [
+    ".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tiff", ".heic", ".heif",
+    ".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v",
 ]
 
-# Session-scoped duplicate memory. For a multi-user deployment this would be per-user.
-SEEN_HASHES: set[str] = set()
+
+def _progress_md(done: list[str], active: str | None) -> str:
+    lines = ["### ⏳ Working on it…", ""]
+    for label in done:
+        lines.append(f"- ✅ {label}")
+    if active:
+        lines.append(f"- 🔄 **{active}…**")
+    return "\n".join(lines)
 
 
 def _fmt_result(res: orchestrator.PipelineResult) -> str:
-    if res.error:
-        return f"### ⚠️ Error\n\n{res.error}"
+    if res is None or res.error:
+        return f"### ⚠️ Error\n\n{res.error if res else 'Something went wrong.'}"
 
     d = res.decision
     f = res.fraud
     lines = []
 
     if d.verified:
-        lines.append(f"## ✅ Verified — {d.display_name}")
+        lines.append(f"## ✅ Rewarded — {d.action_label}")
         lines.append(f"**Reward:** {d.points} Green Points  (≈ NT${d.ntd:.2f})")
     elif d.needs_review:
-        lines.append(f"## 🕵️ Needs review — {d.display_name}")
+        lines.append(f"## 🕵️ Needs review — {d.action_label}")
     else:
-        lines.append(f"## ❌ Not rewarded — {d.display_name}")
+        lines.append(f"## ❌ Not rewarded — {d.action_label}")
 
-    lines.append(f"\n**Confidence:** {d.confidence:.2f}")
+    if d.scene_description:
+        lines.append(f"\n> 🧠 {d.scene_description}")
+
+    lines.append(f"\n**How eco-friendly:** {d.eco_relevance:.0%}")
 
     lines.append("\n**Why:**")
     for r in d.reasons:
@@ -60,70 +77,57 @@ def _fmt_result(res: orchestrator.PipelineResult) -> str:
     return "\n".join(lines)
 
 
-def issue_code() -> str:
-    return fraud_mod.new_challenge_code()
+def analyze(media, use_replay):
+    if not media:
+        yield "Please upload a photo or short video first."
+        return
 
-
-def analyze(image, video, action_id, challenge_code, model):
-    media_path = video or image
-    if not media_path:
-        return "Please upload an image or a short video first.", None
-    # Challenge code is opt-in: only enforced when the user asks for one and shows
-    # it in-frame. Leaving it blank skips that anti-fraud check (fraud.py handles this),
-    # which is what you want when scoring pre-existing photos in a demo.
-    challenge_code = (challenge_code or "").strip()
-
-    action_hint = dict((v, k) for k, v in ACTION_CHOICES).get(action_id, action_id)
-
-    res = orchestrator.run(
-        media_path=media_path,
-        action_id=action_id,
-        action_hint=action_hint,
-        challenge_code=challenge_code,
+    done: list[str] = []
+    active: str | None = None
+    res = None
+    for kind, payload in orchestrator.run_stream(
+        media_path=media,
         seen_hashes=SEEN_HASHES,
-        model=model,
         rules=RULES,
-    )
-    raw = res.observation.get("_raw", "") if res.observation else ""
-    return _fmt_result(res), raw
+        embedder=EMBEDDER,
+        store=STORE,
+        use_replay=bool(use_replay),
+    ):
+        if kind == "stage":
+            if active:
+                done.append(active)
+            active = payload
+            yield _progress_md(done, active)
+        else:
+            res = payload
+    yield _fmt_result(res)
 
 
-with gr.Blocks(title="Eco-Reward PoC (Taiwan)") as demo:
+with gr.Blocks(title="Eco-Reward") as demo:
     gr.Markdown(
-        "# ♻️ Eco-Reward PoC — Taiwan\n"
-        "Upload a photo or short video of an eco-action. A local VLM "
-        f"(`{DEFAULT_MODEL}` via Ollama) inspects it; a rules file decides the reward.\n\n"
-        "**Challenge code (optional):** click *New code* and show it somewhere in your "
-        "shot to prove the submission is fresh. Leave it blank to score an existing photo."
+        "# ♻️ Eco-Reward\n"
+        "Upload a photo or short video of **any** action. The app figures out what you're "
+        "doing, judges how eco-friendly it is, and rewards it — nothing to pick."
     )
 
     with gr.Row():
         with gr.Column():
-            action = gr.Dropdown(
-                choices=ACTION_CHOICES, value=ACTION_CHOICES[0][1],
-                label="Which eco-action are you claiming?",
+            media_in = gr.File(
+                label="Upload a photo or short video",
+                file_types=_UPLOAD_TYPES, file_count="single", type="filepath",
             )
-            with gr.Row():
-                code = gr.Textbox(value="",
-                                  label="Challenge code (optional — show in-frame)", scale=3)
-                new_code_btn = gr.Button("New code", scale=1)
-            image_in = gr.Image(type="filepath", label="Photo", sources=["upload", "webcam"])
-            video_in = gr.Video(label="Short video (optional)", sources=["upload", "webcam"])
-            model_in = gr.Textbox(value=DEFAULT_MODEL, label="Ollama model")
-            go = gr.Button("Verify & reward", variant="primary")
+            replay_toggle = gr.Checkbox(
+                value=True, label="🛡️ Anti-replay check",
+                info="When on, compares against your past submissions so the same action "
+                     "can't be rewarded twice. When off, no history is checked or recorded.",
+            )
+            go = gr.Button("Analyze & reward", variant="primary")
         with gr.Column():
-            out = gr.Markdown(label="Result")
-            with gr.Accordion("Raw VLM output (debug)", open=False):
-                raw_out = gr.Code(label="model JSON", language="json")
+            out = gr.Markdown()
 
-    new_code_btn.click(issue_code, outputs=code)
-    go.click(analyze, inputs=[image_in, video_in, action, code, model_in],
-             outputs=[out, raw_out])
+    go.click(analyze, inputs=[media_in, replay_toggle], outputs=[out])
 
-    gr.Markdown(
-        "---\n*Reward values are illustrative (from the research docs). "
-        "Verify against current MOENV / retailer policy before real use.*"
-    )
+    gr.Markdown("---\n*Reward values are illustrative.*")
 
 
 if __name__ == "__main__":
