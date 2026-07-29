@@ -97,6 +97,13 @@ box, or change `DEFAULT_MODEL` in `pipeline/vlm.py`.
 There are no predefined actions — *any* genuine eco-friendly action is recognized and
 rewarded, scaled by how eco-friendly the brain judges it to be.
 
+**Context window.** Ollama's default context is 4096 tokens — one image alone is ~4k image
+tokens, so the request would be rejected with `exceed_context_size_error`. `pipeline/vlm.py`
+sizes `num_ctx` from the frame count instead (~8k for a photo, ~18k for a 4-frame video)
+and retries once, larger, if the server still says the prompt doesn't fit. Set `ECO_NUM_CTX`
+to pin a fixed value — lower it if a video pushes the model off the GPU (`ollama ps` stops
+saying `100% GPU`).
+
 ---
 
 ## Semantic anti-fraud (Gemini embeddings) — on by default when a key is set
